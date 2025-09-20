@@ -1,0 +1,1709 @@
+-- Server_Part2
+-- Contiene la segunda mitad del archivo original: movimiento, spawn loop, creación de bases,
+-- mapa, comandos admin, income loop, inicialización final, etc.
+-- IMPORTANTE: este script toma las variables/funciones exportadas por Server_Part1 vía _G.Brainrots_Share.
+
+-- Recuperar las variables compartidas exportadas por la Parte1
+local share = _G.Brainrots_Share or {}
+local Players = share.Players or game:GetService("Players")
+local Workspace = share.Workspace or game:GetService("Workspace")
+local TweenService = share.TweenService or game:GetService("TweenService")
+local RunService = share.RunService or game:GetService("RunService")
+local ReplicatedStorage = share.ReplicatedStorage or game:GetService("ReplicatedStorage")
+local Debris = share.Debris or game:GetService("Debris")
+local MarketplaceService = share.MarketplaceService or game:GetService("MarketplaceService")
+local Lighting = game:GetService("Lighting")
+
+-- NUEVO: Evento para ejecutar comandos desde el menú de admin
+local ExecuteAdminCommandEvent = Instance.new("RemoteEvent", ReplicatedStorage)
+ExecuteAdminCommandEvent.Name = "ExecuteAdminCommandEvent"
+
+local SpeedBoostEvent = share.SpeedBoostEvent
+local InvisibilityEvent = share.InvisibilityEvent
+local AdminAbuseEvent = share.AdminAbuseEvent
+local BrazilianDiscoEvent = share.BrazilianDiscoEvent
+
+local BASE_SIZE = share.BASE_SIZE
+local FRUIT_SIZE = share.FRUIT_SIZE
+local WALK_SPEED = share.WALK_SPEED
+local LOCK_LASER_TIME = share.LOCK_LASER_TIME
+local FREE_BOOST_DURATION = share.FREE_BOOST_DURATION
+local SPEED_BOOST_AMOUNT = share.SPEED_BOOST_AMOUNT
+local FRUIT_SPAWN_DELAY = share.FRUIT_SPAWN_DELAY
+local TRANSIT_TIME = share.TRANSIT_TIME
+local GUIDE_ARROW_DURATION = share.GUIDE_ARROW_DURATION
+local LEADERBOARD_UPDATE_INTERVAL = share.LEADERBOARD_UPDATE_INTERVAL
+
+local ADMIN_USERNAMES = share.ADMIN_USERNAMES
+local RARITIES = share.RARITIES
+local nextFruitID = share.nextFruitID
+
+local basesFolder = share.basesFolder or (Instance.new("Folder", Workspace) and nil)
+local fruitsFolder = share.fruitsFolder
+local mapFolder = share.mapFolder
+
+local playerData = share.playerData or {}
+local baseCount = share.baseCount or 0
+local fruitsInTransit = share.fruitsInTransit or {}
+local isSpawning = share.isSpawning or false
+
+local brazilianDiscoActive = share.brazilianDiscoActive or false
+local discoLights = share.discoLights or {}
+local originalColors = share.originalColors or {}
+local deathEventActive = false -- Nueva variable para controlar el Evento de la Muerte
+local crabSpawnLoopActive = false -- NUEVO: controla el spawn de cangrejos
+
+local BASE_POSITIONS = share.BASE_POSITIONS
+local FRUIT_SPAWN_POINT = share.FRUIT_SPAWN_POINT
+local FRUIT_END_POINT = share.FRUIT_END_POINT
+
+-- Se añaden los nuevos Sound IDs
+local SOUND_IDS = share.SOUND_IDS or {}
+SOUND_IDS.FireworkLaunch = "rbxassetid://1289184659"
+SOUND_IDS.DeathEventMusic = "rbxassetid://1838626744"
+-- IDs de las nuevas canciones para el evento brasileño
+SOUND_IDS.BrazilMain = "rbxassetid://119936139925486"
+SOUND_IDS.BrazilAfter = "rbxassetid://5410086218"
+
+-- ID de la animación de baile de samba para el jugador
+local SAMBA_ANIMATION_ID = "rbxassetid://11994191060"
+local sambaAnim = nil
+
+-- ID del modelo del cangrejo de Roblox (objeto de ejemplo)
+local CRAB_MODEL_ID = "rbxassetid://1234567890"
+
+local IsAdmin = share.IsAdmin
+local playSound = share.playSound
+local updateMoneyLabel = share.updateMoneyLabel
+local buyItem = share.buyItem
+local createMapPart = share.createMapPart
+
+local createOrange = share.createOrange
+local createApple = share.createApple
+local createGrapes = share.createGrapes
+local createPineapple = share.createPineapple
+local createWatermelon = share.createWatermelon
+local createDragonFruit = share.createDragonFruit
+local createCosmicStar = share.createCosmicStar
+local createTimeSphere = share.createTimeSphere
+local createFruit = share.createFruit
+
+-- FUNCION PARA MOVER FRUTAS (copiado exactamente del original)
+local function moveFruit(fruit)
+    if not fruit or not fruit.Parent then
+        warn("Fruta no válida para mover")
+        return
+    end
+    
+    local primaryPart = fruit.PrimaryPart
+    if not primaryPart then
+        warn("Error: PrimaryPart falló para " .. fruit.Name)
+        return
+    end
+    
+    primaryPart.Anchored = true
+    primaryPart.CanCollide = false
+    
+    local startPos = FRUIT_SPAWN_POINT
+    local endPos = FRUIT_END_POINT
+    
+    primaryPart.CFrame = CFrame.new(startPos) -- AQUÍ ESTÁ EL ARREGLO
+    
+    local totalTime = 35
+    
+    local startTime = tick()
+    local connection
+    
+    connection = RunService.Heartbeat:Connect(function()
+        if not fruit or not fruit.Parent or not fruit.PrimaryPart then
+            if connection then connection:Disconnect() end
+            return
+        end
+        
+        local elapsed = tick() - startTime
+        local progress = math.min(elapsed / totalTime, 1)
+        
+        local currentPos = startPos:Lerp(endPos, progress)
+        
+        local rotation = CFrame.Angles(0, math.rad(360 * progress * 2), 0)
+        
+        fruit:SetPrimaryPartCFrame(CFrame.new(currentPos) * rotation)
+        
+        if progress >= 1 then
+            connection:Disconnect()
+            task.wait(1)
+            if fruit and fruit.Parent then
+                fruit:Destroy()
+            end
+        end
+    end)
+end
+
+local function startFruitSpawn()
+    if isSpawning then return end
+    isSpawning = true
+    
+    print("Iniciando sistema de spawn de frutas...")
+    
+    task.spawn(function()
+        while true do
+            local ok, err = pcall(function()
+                local fruit = createFruit(FRUIT_SPAWN_POINT)
+                if fruit then
+                    print("Fruta creada: " .. fruit.Name)
+                    task.wait(0.2)
+                    
+                    if fruit and fruit.Parent and fruit.PrimaryPart then
+                        task.spawn(function()
+                            moveFruit(fruit)
+                        end)
+                    else
+                        warn("Fruta no está lista para moverse")
+                        if fruit then fruit:Destroy() end
+                    end
+                end
+            end)
+            if not ok then
+                warn("Error al crear fruta: " .. tostring(err))
+            end
+            task.wait(FRUIT_SPAWN_DELAY)
+        end
+    end)
+end
+
+-- FUNCIÓN PARA CREAR BASES (copiada exactamente)
+local function createBase(player, pos, orientation)
+    local baseModel = Instance.new("Model")
+    baseModel.Name = player.Name .. "_Base"
+    baseModel.Parent = basesFolder
+    baseModel:SetAttribute("Owner", player.UserId)
+    
+    local baseCFrame = CFrame.new(pos) * CFrame.fromEulerAnglesXYZ(math.rad(orientation.X), math.rad(orientation.Y), math.rad(orientation.Z))
+    
+    local basePlatform = Instance.new("Part")
+    basePlatform.Size = Vector3.new(BASE_SIZE.X, 1, BASE_SIZE.Z)
+    basePlatform.CFrame = baseCFrame
+    basePlatform.Anchored = true
+    basePlatform.Color = Color3.fromRGB(0, 150, 0)
+    basePlatform.Name = "BasePlatform"
+    basePlatform.Parent = baseModel
+    
+    local wallHeight = 25
+    local wallWidth = 1
+    local wallColor = Color3.fromRGB(100, 100, 100)
+    local glassColor = Color3.fromRGB(100, 200, 255)
+    
+    local roof = Instance.new("Part")
+    roof.Size = Vector3.new(BASE_SIZE.X, 1, BASE_SIZE.Z)
+    roof.CFrame = baseCFrame * CFrame.new(0, wallHeight + 0.5, 0)
+    roof.Anchored = true
+    roof.Color = Color3.fromRGB(50, 50, 50)
+    roof.Parent = baseModel
+    
+    local wallLeft = Instance.new("Part")
+    wallLeft.Size = Vector3.new(wallWidth, wallHeight, BASE_SIZE.Z)
+    wallLeft.CFrame = baseCFrame * CFrame.new(-BASE_SIZE.X/2 + wallWidth/2, wallHeight/2, 0)
+    wallLeft.Anchored = true
+    wallLeft.Color = wallColor
+    wallLeft.Name = "WallLeft"
+    wallLeft.Parent = baseModel
+    
+    local wallRightHeight = 12
+    local wallRightLower = Instance.new("Part")
+    wallRightLower.Size = Vector3.new(wallWidth, wallRightHeight, BASE_SIZE.Z)
+    wallRightLower.CFrame = baseCFrame * CFrame.new(BASE_SIZE.X/2 - wallWidth/2, wallRightHeight/2, 0)
+    wallRightLower.Anchored = true
+    wallRightLower.Color = glassColor
+    wallRightLower.Transparency = 0.5
+    wallRightLower.Material = Enum.Material.Glass
+    wallRightLower.Name = "WallRightLower"
+    wallRightLower.Parent = baseModel
+    
+    local wallRightUpper = Instance.new("Part")
+    wallRightUpper.Size = Vector3.new(wallWidth, wallRightHeight, BASE_SIZE.Z)
+    wallRightUpper.CFrame = baseCFrame * CFrame.new(BASE_SIZE.X/2 - wallWidth/2, wallHeight - (wallRightHeight/2), 0)
+    wallRightUpper.Anchored = true
+    wallRightUpper.Color = glassColor
+    wallRightUpper.Transparency = 0.5
+    wallRightUpper.Material = Enum.Material.Glass
+    wallRightUpper.Name = "WallRightUpper"
+    wallRightUpper.Parent = baseModel
+    
+    local wallBack = Instance.new("Part")
+    wallBack.Size = Vector3.new(BASE_SIZE.X, wallHeight, wallWidth)
+    wallBack.CFrame = baseCFrame * CFrame.new(0, wallHeight/2, BASE_SIZE.Z/2 - wallWidth/2)
+    wallBack.Anchored = true
+    wallBack.Color = wallColor
+    wallBack.Name = "WallBack"
+    wallBack.Parent = baseModel
+    
+    local frameColor = Color3.fromRGB(50, 50, 50)
+    local frameHeight = 2
+    local frameThickness = 1
+    
+    local frame1 = Instance.new("Part")
+    frame1.Size = Vector3.new(BASE_SIZE.X, frameHeight, frameThickness)
+    frame1.CFrame = baseCFrame * CFrame.new(0, wallHeight + frameHeight/2, BASE_SIZE.Z/2 - frameThickness/2)
+    frame1.Anchored = true
+    frame1.Color = frameColor
+    frame1.Parent = baseModel
+    
+    local frame2 = Instance.new("Part")
+    frame2.Size = Vector3.new(BASE_SIZE.X, frameHeight, frameThickness)
+    frame2.CFrame = baseCFrame * CFrame.new(0, wallHeight + frameHeight/2, -BASE_SIZE.Z/2 + frameThickness/2)
+    frame2.Anchored = true
+    frame2.Color = frameColor
+    frame2.Parent = baseModel
+    
+    local frame3 = Instance.new("Part")
+    frame3.Size = Vector3.new(frameThickness, frameHeight, BASE_SIZE.Z)
+    frame3.CFrame = baseCFrame * CFrame.new(BASE_SIZE.X/2 - frameThickness/2, wallHeight + frameHeight/2, 0)
+    frame3.Anchored = true
+    frame3.Color = frameColor
+    frame3.Parent = baseModel
+    
+    local frame4 = Instance.new("Part")
+    frame4.Size = Vector3.new(frameThickness, frameHeight, BASE_SIZE.Z)
+    frame4.CFrame = baseCFrame * CFrame.new(-BASE_SIZE.X/2 + frameThickness/2, wallHeight + frameHeight/2, 0)
+    frame4.Anchored = true
+    frame4.Color = frameColor
+    frame4.Parent = baseModel
+    
+    -- ZONA DE COLECCIÓN VERDE MOVIDA HACIA ATRÁS (CORREGIDO)
+    local interiorCollect = Instance.new("Part")
+    interiorCollect.Size = Vector3.new(BASE_SIZE.X * 0.98, 0.5, BASE_SIZE.Z * 0.35)
+    local zOffset = (BASE_SIZE.Z/2) - (interiorCollect.Size.Z/2) - 2
+    interiorCollect.CFrame = baseCFrame * CFrame.new(0, 0.75, zOffset)
+    interiorCollect.Anchored = true
+    interiorCollect.Color = Color3.fromRGB(0, 200, 0)
+    interiorCollect.Name = "InteriorCollection"
+    interiorCollect.Parent = baseModel
+    
+    local fruitQuadSize = Vector3.new(8, 0.5, 8)
+    local numQuadsPerSide = 3
+    local quadZSpacing = 10
+    local quads = {}
+    
+    local quadXLeft = -BASE_SIZE.X/2 + 10
+    local startZ = -(BASE_SIZE.Z/2 - 10)
+    for i = 1, numQuadsPerSide do
+        local quad = Instance.new("Part")
+        quad.Size = fruitQuadSize
+        quad.CFrame = baseCFrame * CFrame.new(quadXLeft, 1.2, startZ + (i-1) * quadZSpacing)
+        quad.Anchored = true
+        quad.Color = Color3.fromRGB(200, 200, 200)
+        quad.Material = Enum.Material.Plastic
+        quad.Parent = baseModel
+        quad.Name = "FruitQuad"..i
+        table.insert(quads, quad)
+    end
+    
+    local quadXRight = BASE_SIZE.X/2 - 10
+    for i = 1, numQuadsPerSide do
+        local quad = Instance.new("Part")
+        quad.Size = fruitQuadSize
+        quad.CFrame = baseCFrame * CFrame.new(quadXRight, 1.2, startZ + (i-1) * quadZSpacing)
+        quad.Anchored = true
+        quad.Color = Color3.fromRGB(200, 200, 200)
+        quad.Material = Enum.Material.Plastic
+        quad.Parent = baseModel
+        quad.Name = "FruitQuad"..(i + numQuadsPerSide)
+        table.insert(quads, quad)
+    end
+    
+    local lockLasersFolder = Instance.new("Folder", baseModel)
+    lockLasersFolder.Name = "LockLasers"
+    
+    local numLasers = 10
+    local laserSpacing = (BASE_SIZE.X - 2) / (numLasers - 1)
+    local laserStartX = -BASE_SIZE.X/2 + 1
+    local laserHeight = wallHeight - 1
+    
+    for i = 1, numLasers do
+        local laser = Instance.new("Part")
+        laser.Size = Vector3.new(0.5, laserHeight, 0.5)
+        local frontZ = -BASE_SIZE.Z/2 + 0.75
+        laser.CFrame = baseCFrame * CFrame.new(laserStartX + (i-1) * laserSpacing, laserHeight/2 + 1, frontZ)
+        laser.Anchored = true
+        laser.CanCollide = false
+        laser.Transparency = 1
+        laser.Color = Color3.fromRGB(255, 0, 0)
+        laser.Material = Enum.Material.Neon
+        laser.Name = "LockLaser"
+        laser.Parent = lockLasersFolder
+        
+        laser.Touched:Connect(function(hit)
+            local character = hit.Parent
+            local playerHit = Players:GetPlayerFromCharacter(character)
+            if playerHit and playerHit.UserId ~= player.UserId then
+                if laser.Transparency < 1 then
+                    local humanoid = character:FindFirstChildOfClass("Humanoid")
+                    if humanoid then
+                        print(playerHit.Name .. " ha tocado un láser de la base de " .. player.Name .. " y va a morir.")
+                        humanoid.Health = 0
+                    end
+                end
+            end
+        end)
+    end
+    
+    local isLocked = false
+    local debounce = false
+    
+    local lockButton = Instance.new("Part")
+    lockButton.Size = Vector3.new(20, 0.5, 5)
+    lockButton.Shape = Enum.PartType.Block
+    lockButton.CFrame = baseCFrame * CFrame.new(0, 1.5, -BASE_SIZE.Z/2 + 3)
+    lockButton.Anchored = true
+    lockButton.Color = Color3.fromRGB(0, 255, 0)
+    lockButton.Material = Enum.Material.Neon
+    lockButton.Name = "LockButton"
+    lockButton.Parent = baseModel
+    
+    local timerGui = Instance.new("BillboardGui")
+    timerGui.Size = UDim2.new(0, 100, 0, 50)
+    timerGui.StudsOffset = Vector3.new(0, 3, 0)
+    timerGui.AlwaysOnTop = true
+    timerGui.Adornee = lockButton
+    timerGui.Enabled = false
+    timerGui.Parent = lockButton
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(1,0,1,0)
+    mainFrame.BackgroundTransparency = 0
+    mainFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    mainFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    mainFrame.BorderSizePixel = 2
+    mainFrame.Parent = timerGui
+    
+    local timerLabel = Instance.new("TextLabel")
+    timerLabel.Size = UDim2.new(1, 0, 1, 0)
+    timerLabel.Text = "Bloqueado: 0s"
+    timerLabel.TextScaled = true
+    timerLabel.Font = Enum.Font.SourceSansBold
+    timerLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    timerLabel.BackgroundTransparency = 1
+    timerLabel.Parent = mainFrame
+    
+    lockButton.Touched:Connect(function(hit)
+        local playerHit = Players:GetPlayerFromCharacter(hit.Parent)
+        if playerHit and playerHit == player and not isLocked and not debounce then
+            debounce = true
+            isLocked = true
+            
+            for _, laser in ipairs(lockLasersFolder:GetChildren()) do
+                laser.CanCollide = true
+                laser.Transparency = 0
+            end
+            
+            print("Base bloqueada por " .. player.Name .. " durante " .. LOCK_LASER_TIME .. " segundos.")
+            
+            timerGui.Enabled = true
+            local remainingTime = LOCK_LASER_TIME
+            task.spawn(function()
+                while remainingTime > 0 do
+                    timerLabel.Text = "Bloqueado: " .. tostring(remainingTime) .. "s"
+                    remainingTime = remainingTime - 1
+                    task.wait(1)
+                end
+                isLocked = false
+                debounce = false
+                timerGui.Enabled = false
+                for _, laser in ipairs(lockLasersFolder:GetChildren()) do
+                    laser.CanCollide = false
+                    laser.Transparency = 1
+                end
+            end)
+        end
+    end)
+    
+    local collectionZone = Instance.new("Folder", baseModel)
+    collectionZone.Name = "CollectionZone"
+    
+    local featureSize = Vector3.new(5, 5, 5)
+    local center = interiorCollect.Position
+    local radius = BASE_SIZE.X * 0.25
+    
+    local speedPart = Instance.new("Part")
+    speedPart.Size = featureSize
+    speedPart.CFrame = CFrame.new(center) * CFrame.Angles(0, math.rad(45), 0) * CFrame.new(radius, 0, 0)
+    speedPart.Color = Color3.fromRGB(0, 255, 255)
+    speedPart.Material = Enum.Material.Neon
+    speedPart.Anchored = true
+    speedPart.CanCollide = false
+    speedPart.Name = "SpeedCoil"
+    speedPart.Parent = baseModel
+    
+    local speedGui = Instance.new("BillboardGui", speedPart)
+    speedGui.Size = UDim2.new(0, 100, 0, 50)
+    speedGui.StudsOffset = Vector3.new(0, 4, 0)
+    local speedLabel = Instance.new("TextLabel", speedGui)
+    speedLabel.Size = UDim2.new(1, 0, 1, 0)
+    speedLabel.Text = "Velocidad Gratis"
+    speedLabel.TextScaled = true
+    speedLabel.BackgroundTransparency = 1
+    speedLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
+    speedLabel.Parent = speedGui
+    
+    local invisiblePart = Instance.new("Part")
+    invisiblePart.Size = featureSize
+    invisiblePart.CFrame = CFrame.new(center) * CFrame.Angles(0, math.rad(-45), 0) * CFrame.new(radius, 0, 0)
+    invisiblePart.Color = Color3.fromRGB(100, 0, 150)
+    invisiblePart.Material = Enum.Material.ForceField
+    invisiblePart.Anchored = true
+    invisiblePart.CanCollide = false
+    invisiblePart.Name = "InvisibilityCloak"
+    invisiblePart.Parent = baseModel
+    
+    local invisibleGui = Instance.new("BillboardGui", invisiblePart)
+    invisibleGui.Size = UDim2.new(0, 100, 0, 50)
+    invisibleGui.StudsOffset = Vector3.new(0, 4, 0)
+    local invisibleLabel = Instance.new("TextLabel", invisibleGui)
+    invisibleLabel.Size = UDim2.new(1, 0, 1, 0)
+    invisibleLabel.Text = "Invisibilidad Gratis"
+    invisibleLabel.TextScaled = true
+    invisibleLabel.BackgroundTransparency = 1
+    invisibleLabel.TextColor3 = Color3.fromRGB(200, 0, 255)
+    invisibleLabel.Parent = invisibleGui
+    
+    speedPart.Touched:Connect(function(hit)
+        local playerHit = Players:GetPlayerFromCharacter(hit.Parent)
+        if playerHit and playerData[playerHit] and playerHit == player then
+            local humanoid = playerHit.Character and playerHit.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid:GetAttribute("SpeedBoostActive") == nil then
+                humanoid:SetAttribute("SpeedBoostActive", true)
+                local originalSpeed = humanoid.WalkSpeed
+                humanoid.WalkSpeed = (originalSpeed or 16) + SPEED_BOOST_AMOUNT
+                
+                SpeedBoostEvent:FireClient(playerHit, FREE_BOOST_DURATION)
+                
+                task.delay(FREE_BOOST_DURATION, function()
+                    if humanoid and humanoid.Parent then
+                        humanoid.WalkSpeed = originalSpeed
+                        humanoid:SetAttribute("SpeedBoostActive", nil)
+                    end
+                end)
+            end
+        end
+    end)
+    
+    invisiblePart.Touched:Connect(function(hit)
+        local playerHit = Players:GetPlayerFromCharacter(hit.Parent)
+        if playerHit and playerData[playerHit] and playerHit == player then
+            local char = playerHit.Character
+            if char and char:GetAttribute("InvisibleActive") == nil then
+                char:SetAttribute("InvisibleActive", true)
+                
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") or part:IsA("Decal") or part:IsA("ShirtGraphic") then
+                        part.Transparency = 1
+                    end
+                end
+                
+                local nameTag = char:FindFirstChild("Head") and char.Head:FindFirstChildOfClass("BillboardGui")
+                if nameTag then
+                    nameTag.Enabled = false
+                end
+                
+                InvisibilityEvent:FireClient(playerHit, FREE_BOOST_DURATION)
+                
+                task.delay(FREE_BOOST_DURATION, function()
+                    for _, part in ipairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") or part:IsA("Decal") or part:IsA("ShirtGraphic") then
+                            part.Transparency = 0
+                        end
+                    end
+                    
+                    if nameTag then
+                        nameTag.Enabled = true
+                    end
+                    char:SetAttribute("InvisibleActive", nil)
+                end)
+            end
+        end
+    end)
+    
+    playerData[player] = {Money = 100, Base = baseModel, Brainrots = {}}
+    return baseModel
+end
+
+local function createMap()
+    local baseplate = Workspace:FindFirstChild("Baseplate")
+    if baseplate then
+        baseplate:Destroy()
+    end
+    
+    local mapSize = 250
+    createMapPart(Vector3.new(mapSize, 1, mapSize), Vector3.new(0, 0, 0), Color3.fromRGB(0, 200, 0), Enum.Material.Plastic, mapFolder, "Floor")
+    
+    local wallSize = Vector3.new(mapSize, 50, 2)
+    local wallColor = Color3.fromRGB(139, 69, 19)
+    local wallOffset = mapSize / 2
+    
+    createMapPart(wallSize, Vector3.new(0, 25, -wallOffset), wallColor, Enum.Material.Plastic, mapFolder, "WallBack")
+    createMapPart(wallSize, Vector3.new(0, 25, wallOffset), wallColor, Enum.Material.Plastic, mapFolder, "WallFront")
+    createMapPart(Vector3.new(2, 50, mapSize), Vector3.new(wallOffset, 25, 0), wallColor, Enum.Material.Plastic, mapFolder, "WallRight")
+    createMapPart(Vector3.new(2, 50, mapSize), Vector3.new(-wallOffset, 25, 0), wallColor, Enum.Material.Plastic, mapFolder, "WallLeft")
+    
+    local borderColor = Color3.fromRGB(0, 150, 0)
+    createMapPart(Vector3.new(mapSize, 3, 2), Vector3.new(0, 51.5, -wallOffset), borderColor, nil, mapFolder, "BackBorder")
+    createMapPart(Vector3.new(mapSize, 3, 2), Vector3.new(0, 51.5, wallOffset), borderColor, nil, mapFolder, "FrontBorder")
+    createMapPart(Vector3.new(2, 3, mapSize), Vector3.new(wallOffset, 51.5, 0), borderColor, nil, mapFolder, "RightBorder")
+    createMapPart(Vector3.new(2, 3, mapSize), Vector3.new(-wallOffset, 51.5, 0), borderColor, nil, mapFolder, "LeftBorder")
+    
+    createMapPart(Vector3.new(20, 0.5, 250), Vector3.new(0, 1.01, 0), Color3.fromRGB(255, 0, 0), nil, mapFolder, "CentralArea")
+    
+    -- Seccion del tunel arreglada para evitar que las paredes se superpongan
+    local function createTunnel(zPosition, nameSuffix)
+        local tunnelHeight = 15
+        local tunnelWidth = 20
+        local wallHeight = 50
+        local wallColor = Color3.fromRGB(139, 69, 19)
+        local entranceBorderColor = Color3.fromRGB(100, 100, 100)
+        local mapWidth = 250
+        
+        -- El ancho total de las dos paredes laterales
+        local totalSideWallWidth = mapWidth - tunnelWidth - 2
+        local sideWallWidth = totalSideWallWidth / 2
+        local sideWallOffset = (mapWidth/2) - (sideWallWidth/2) - 1
+        
+        -- Crea la parte izquierda de la pared, dejando un hueco para el túnel
+        createMapPart(Vector3.new(sideWallWidth, wallHeight, 2), Vector3.new(-sideWallOffset, wallHeight/2, zPosition), wallColor, Enum.Material.Plastic, mapFolder, "WallLeft"..nameSuffix)
+        -- Crea la parte derecha de la pared
+        createMapPart(Vector3.new(sideWallWidth, wallHeight, 2), Vector3.new(sideWallOffset, wallHeight/2, zPosition), wallColor, Enum.Material.Plastic, mapFolder, "WallRight"..nameSuffix)
+        
+        -- Crea la parte de arriba del túnel para formar el hueco
+        createMapPart(Vector3.new(tunnelWidth, 5, 2), Vector3.new(0, tunnelHeight + 2.5, zPosition), entranceBorderColor, nil, mapFolder, "TopBorder"..nameSuffix)
+        -- Crea los bordes de los lados del túnel
+        createMapPart(Vector3.new(5, tunnelHeight + 2.5, 2), Vector3.new(-(tunnelWidth/2 + 2.5), (tunnelHeight + 2.5)/2, zPosition), entranceBorderColor, nil, mapFolder, "LeftBorder"..nameSuffix)
+        createMapPart(Vector3.new(5, tunnelHeight + 2.5, 2), Vector3.new((tunnelWidth/2 + 2.5), (tunnelHeight + 2.5)/2, zPosition), entranceBorderColor, nil, mapFolder, "RightBorder"..nameSuffix)
+        
+        -- El túnel en sí - ARREGLADO
+        local tunnelPart = createMapPart(Vector3.new(tunnelWidth, tunnelHeight, 2), Vector3.new(0, tunnelHeight/2 + 1, zPosition), Color3.fromRGB(0, 0, 0), nil, mapFolder, "Tunnel"..nameSuffix, false)
+        tunnelPart.Transparency = 0 -- Se hace visible con el color negro
+    end
+    
+    createTunnel(wallOffset, "Front")
+    createTunnel(-wallOffset, "Back")
+    
+    local leaderboardSign = createMapPart(Vector3.new(20, 15, 1), Vector3.new(-100, 25, wallOffset - 0.5), Color3.fromRGB(50, 50, 50), nil, mapFolder, "LeaderboardSign", false)
+    
+    local leaderboardGui = Instance.new("BillboardGui")
+    leaderboardGui.Size = UDim2.new(0, 100, 0, 75)
+    leaderboardGui.Adornee = leaderboardSign
+    leaderboardGui.Parent = leaderboardSign
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(1, 0, 1, 0)
+    mainFrame.BackgroundTransparency = 1
+    mainFrame.Parent = leaderboardGui
+    
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, 0, 0.2, 0)
+    titleLabel.Position = UDim2.new(0, 0, 0, 0)
+    titleLabel.Text = "Mejores Jugadores"
+    titleLabel.TextScaled = true
+    titleLabel.Font = Enum.Font.SourceSansBold
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Parent = mainFrame
+    
+    local playerList = Instance.new("Frame")
+    playerList.Size = UDim2.new(1, 0, 0.8, 0)
+    playerList.Position = UDim2.new(0, 0, 0.2, 0)
+    playerList.BackgroundTransparency = 1
+    playerList.Parent = mainFrame
+    
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 5)
+    listLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    listLayout.Parent = playerList
+    
+    local function updateLeaderboard()
+        for _, child in ipairs(playerList:GetChildren()) do
+            if child:IsA("TextLabel") then
+                child:Destroy()
+            end
+        end
+        
+        local sortedPlayers = {}
+        for player, data in pairs(playerData) do
+            table.insert(sortedPlayers, {player = player, money = data.Money})
+        end
+        
+        table.sort(sortedPlayers, function(a, b)
+            return a.money > b.money
+        end)
+        
+        for i, entry in ipairs(sortedPlayers) do
+            if i > 5 then break end
+            
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(1, 0, 0.2, 0)
+            label.Text = i .. ". " .. entry.player.Name .. " - $" .. entry.money
+            label.TextScaled = true
+            label.Font = Enum.Font.SourceSansBold
+            label.TextColor3 = Color3.fromRGB(255, 255, 255)
+            label.BackgroundTransparency = 1
+            label.Parent = playerList
+        end
+    end
+    
+    task.spawn(function()
+        while task.wait(LEADERBOARD_UPDATE_INTERVAL) do
+            updateLeaderboard()
+        end
+    end)
+    
+    local music = Instance.new("Sound", Workspace)
+    music.Name = "BackgroundMusic"
+    music.SoundId = SOUND_IDS.BackgroundMusic
+    music.Looped = true
+    music.Volume = 0.5
+    pcall(function() music:Play() end)
+        
+        -- TIENDA
+        local SHOP_POSITION = Vector3.new(100, 1, 120)
+        local SHOP_ITEMS = {
+        ["Velocidad x2"] = {Price = 100, Stat = "WalkSpeed", Value = 10, Name = "Velocidad x2"}
+        }
+        
+        local shop = Instance.new("Model")
+        shop.Name = "Shop"
+        shop.Parent = mapFolder
+        
+        local shopFloor = createMapPart(Vector3.new(20, 1, 20), SHOP_POSITION, Color3.fromRGB(139, 69, 19), nil, shop, "ShopFloor")
+        
+        local shopPrompt = Instance.new("ProximityPrompt", shopFloor)
+        shopPrompt.ActionText = "Comprar Velocidad x2 - $100"
+        shopPrompt.HoldDuration = 0.8
+        shopPrompt.MaxActivationDistance = 8
+        
+        shopPrompt.Triggered:Connect(function(player)
+            buyItem(player, SHOP_ITEMS["Velocidad x2"])
+        end)
+        
+        local pillarSize = Vector3.new(2, 8, 2)
+        local pillarColor = Color3.fromRGB(150, 75, 0)
+        createMapPart(pillarSize, SHOP_POSITION + Vector3.new(8, 4.5, -8), pillarColor, nil, shop, "Pillar1")
+        createMapPart(pillarSize, SHOP_POSITION + Vector3.new(-8, 4.5, -8), pillarColor, nil, shop, "Pillar2")
+        createMapPart(pillarSize, SHOP_POSITION + Vector3.new(8, 4.5, 8), pillarColor, nil, shop, "Pillar3")
+        createMapPart(pillarSize, SHOP_POSITION + Vector3.new(-8, 4.5, 8), pillarColor, nil, shop, "Pillar4")
+        
+        createMapPart(Vector3.new(24, 1, 24), SHOP_POSITION + Vector3.new(0, 9, 0), Color3.fromRGB(80, 40, 0), nil, shop, "Roof")
+        
+        local shopEntrance = createMapPart(Vector3.new(20, 5, 20), SHOP_POSITION, Color3.fromRGB(100, 100, 100), nil, shop, "ShopEntrance", false)
+        shopEntrance.Transparency = 1
+    end
+    
+    -- ######################################################################
+    -- #############        NUEVO SISTEMA DE COMANDOS ADMIN        ############
+    -- ######################################################################
+    
+    local ADMIN_COMMANDS = {}
+    
+    ADMIN_COMMANDS["/givemoney"] = function(adminPlayer, targetName, amountStr)
+        local amount = tonumber(amountStr)
+        if not targetName or not amount or amount <= 0 then
+            print("❌ Comando inválido. Uso: /givemoney [NombreJugador] [Cantidad]")
+            return
+        end
+        
+        local targetPlayer = nil
+        for _, p in pairs(Players:GetPlayers()) do
+            if p.Name:lower():find(targetName:lower()) then
+                targetPlayer = p
+                break
+            end
+        end
+        
+        if targetPlayer and playerData[targetPlayer] then
+            playerData[targetPlayer].Money = (playerData[targetPlayer].Money or 0) + amount
+            updateMoneyLabel(targetPlayer)
+            print("✅ Admin " .. adminPlayer.Name .. " dio $" .. amount .. " a " .. targetPlayer.Name)
+        else
+            print("❌ Jugador '" .. targetName .. "' no encontrado o sin datos")
+        end
+    end
+    
+    ADMIN_COMMANDS["/teleport"] = function(adminPlayer, targetName)
+        if not targetName then
+            print("❌ Comando inválido. Uso: /teleport [NombreJugador]")
+            return
+        end
+        
+        local targetPlayer = nil
+        for _, p in pairs(Players:GetPlayers()) do
+            if p.Name:lower():find(targetName:lower()) then
+                targetPlayer = p
+                break
+            end
+        end
+        
+        if targetPlayer and targetPlayer.Character and adminPlayer.Character then
+            local targetHRP = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local playerHRP = adminPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if targetHRP and playerHRP then
+                local targetPosition = targetHRP.Position
+                playerHRP.CFrame = CFrame.new(targetPosition + Vector3.new(0, 5, 0))
+                print("✅ Admin " .. adminPlayer.Name .. " se teletransportó a " .. targetPlayer.Name)
+            else
+                print("❌ Error al teletransportar. Personaje no encontrado.")
+            end
+        else
+            print("❌ Jugador '" .. targetName .. "' no encontrado o sin personaje")
+        end
+    end
+    
+    ADMIN_COMMANDS["/adminabuse"] = function(adminPlayer)
+        print("🚨 ADMIN ABUSE ACTIVADO - EFECTOS APLICADOS SILENCIOSAMENTE")
+        
+        for _, allPlayers in pairs(Players:GetPlayers()) do
+            task.spawn(function()
+                if allPlayers.Character and allPlayers.Character:FindFirstChild("Humanoid") then
+                    local humanoid = allPlayers.Character:FindFirstChild("Humanoid")
+                    humanoid.WalkSpeed = 100
+                    humanoid.JumpPower = 100
+                    task.delay(10, function()
+                        if humanoid and humanoid.Parent then
+                            humanoid.WalkSpeed = 16
+                            humanoid.JumpPower = 50
+                        end
+                    end)
+                end
+            end)
+        end
+        AdminAbuseEvent:FireAllClients("silent_mode")
+    end
+    
+    ADMIN_COMMANDS["/spawnenemy"] = function(adminPlayer, countStr)
+        local enemyCount = tonumber(countStr) or 5
+        
+        for i = 1, enemyCount do
+            local enemy = Instance.new("Part")
+            enemy.Size = Vector3.new(4, 8, 4)
+            enemy.Color = Color3.fromRGB(255, 0, 0)
+            enemy.Material = Enum.Material.Neon
+            enemy.Shape = Enum.PartType.Block
+            enemy.Name = "AdminEnemy"
+            enemy.Parent = Workspace
+            enemy.Anchored = false
+            enemy.CanCollide = true
+            
+            local randomX = math.random(-100, 100)
+            local randomZ = math.random(-100, 100)
+            enemy.Position = Vector3.new(randomX, 10, randomZ)
+            Debris:AddItem(enemy, 30)
+        end
+        print("👾 Admin " .. adminPlayer.Name .. " spawneó " .. enemyCount .. " enemigos")
+    end
+    
+    ADMIN_COMMANDS["/cleanup"] = function(adminPlayer)
+        local cleanedItems = 0
+        for _, obj in pairs(Workspace:GetChildren()) do
+            if obj.Name == "AdminEnemy" or (obj:IsA("Model") and obj.Name:find("Fruit")) or obj.Name == "RainTaco" then
+                obj:Destroy()
+                cleanedItems = cleanedItems + 1
+            end
+        end
+        print("🧹 Admin " .. adminPlayer.Name .. " limpió " .. cleanedItems .. " objetos del mapa")
+    end
+    
+    ADMIN_COMMANDS["/raintacos"] = function(adminPlayer)
+        print("🌮 LLUVIA DE TACOS ACTIVADA POR ADMIN " .. adminPlayer.Name .. " - DURACIÓN: 1 MINUTO")
+        
+        local music = Workspace:FindFirstChild("RainTacosMusic")
+        if music then music:Destroy() end
+        
+        music = Instance.new("Sound", Workspace)
+        music.Name = "RainTacosMusic"
+        music.SoundId = "rbxassetid://142376088"
+        music.Looped = true
+        music.Volume = 0.8
+        pcall(function() music:Play() end)
+            
+            -- [[ ARREGLO: SE ELIMINÓ EL GUI QUE MOLESTABA ]]
+            -- El bucle que creaba el ScreenGui para todos los jugadores ha sido eliminado.
+            
+            local rainDuration = 60
+            local startTime = tick()
+            
+            task.spawn(function()
+                while tick() - startTime < rainDuration do
+                    for i = 1, 10 do
+                        local taco = Instance.new("Part")
+                        taco.Size = Vector3.new(2, 2, 2)
+                        taco.Color = Color3.fromRGB(255, 215, 0)
+                        taco.Material = Enum.Material.Neon
+                        taco.Shape = Enum.PartType.Block
+                        taco.Name = "RainTaco"
+                        taco.Parent = Workspace
+                        taco.Anchored = false
+                        taco.CanCollide = true
+                        
+                        local randomX = math.random(-120, 120)
+                        local randomZ = math.random(-120, 120)
+                        local randomY = math.random(80, 120)
+                        taco.Position = Vector3.new(randomX, randomY, randomZ)
+                        
+                        local tacoGui = Instance.new("BillboardGui", taco)
+                        tacoGui.Size = UDim2.new(0, 50, 0, 50)
+                        tacoGui.Adornee = taco
+                        tacoGui.Parent = taco
+                        
+                        local tacoLabel = Instance.new("TextLabel", tacoGui)
+                        tacoLabel.Size = UDim2.new(1, 0, 1, 0)
+                        tacoLabel.Text = "🌮"
+                        tacoLabel.TextScaled = true
+                        tacoLabel.BackgroundTransparency = 1
+                        tacoLabel.Parent = tacoGui
+                        
+                        Debris:AddItem(taco, 10)
+                    end
+                    task.wait(0.2)
+                end
+                
+                task.wait(5)
+                if music then music:Destroy() end
+                print("🌮 Lluvia de tacos terminada.")
+            end)
+        end
+        
+        ADMIN_COMMANDS["/brasil"] = function(adminPlayer)
+            print("🇧🇷 ADMIN ABUSE BRASILEÑO ACTIVADO - DISCOTECA EXTREMA")
+            
+            if brazilianDiscoActive then
+                print("❌ Discoteca brasileña ya está activa")
+                return
+            end
+            
+            brazilianDiscoActive = true
+            crabSpawnLoopActive = true
+            
+            local backgroundMusic = Workspace:FindFirstChild("BackgroundMusic")
+            if backgroundMusic then backgroundMusic:Stop() end
+            
+            local brazilMusic = Workspace:FindFirstChild("BrazilianDiscoMusic")
+            if brazilMusic then brazilMusic:Destroy() end
+            
+            brazilMusic = Instance.new("Sound", Workspace)
+            brazilMusic.Name = "BrazilianDiscoMusic"
+            brazilMusic.SoundId = SOUND_IDS.BrazilMain -- NUEVO: Primera canción
+            brazilMusic.Looped = true
+            brazilMusic.Volume = 1
+            pcall(function() brazilMusic:Play() end)
+                
+                -- El resto de la lógica del comando /brasil... (es muy larga y no necesita cambios)
+                -- Se ha omitido por brevedad pero sigue existiendo en el código original.
+                -- (Lógica de baile, luces, cambio de cielo, etc.)
+                
+                -- Código completo del evento /brasil (sin cambios)
+                for _, targetPlayer in pairs(Players:GetPlayers()) do
+                    local char = targetPlayer.Character
+                    if char then
+                        local hum = char:FindFirstChildOfClass("Humanoid")
+                        if hum then
+                            local animator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator", hum)
+                            local anim = Instance.new("Animation")
+                            anim.AnimationId = SAMBA_ANIMATION_ID
+                            sambaAnim = animator:LoadAnimation(anim)
+                            sambaAnim.Looped = true
+                            sambaAnim:Play()
+                        end
+                    end
+                end
+                
+                for _, targetPlayer in pairs(Players:GetPlayers()) do
+                    task.spawn(function()
+                        local gui = targetPlayer.PlayerGui:FindFirstChild("BrazilianDiscoGUI")
+                        if gui then gui:Destroy() end
+                        
+                        gui = Instance.new("ScreenGui")
+                        gui.Name = "BrazilianDiscoGUI"
+                        gui.Parent = targetPlayer.PlayerGui
+                        
+                        local blackScreen = Instance.new("Frame")
+                        blackScreen.Size = UDim2.new(1, 0, 1, 0)
+                        blackScreen.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+                        blackScreen.Parent = gui
+                        
+                        task.spawn(function()
+                            for i = 1, 30 do
+                                blackScreen.BackgroundTransparency = 0
+                                task.wait(0.1)
+                                blackScreen.BackgroundTransparency = 1
+                                task.wait(0.15)
+                            end
+                            blackScreen:Destroy()
+                        end)
+                    end)
+                end
+                
+                task.spawn(function()
+                    local lighting = game:GetService("Lighting")
+                    local originalSkybox = lighting:FindFirstChildOfClass("Sky")
+                    
+                    local galaxySky = Instance.new("Sky")
+                    galaxySky.SkyboxBk = "rbxassetid://159454299"
+                    galaxySky.SkyboxDn = "rbxassetid://159454296" 
+                    galaxySky.SkyboxFt = "rbxassetid://159454293"
+                    galaxySky.SkyboxLf = "rbxassetid://159454286"
+                    galaxySky.SkyboxRt = "rbxassetid://159454300"
+                    galaxySky.SkyboxUp = "rbxassetid://159454288"
+                    galaxySky.Parent = lighting
+                    
+                    lighting.Ambient = Color3.fromRGB(255, 0, 0)
+                    lighting.Brightness = 3
+                    lighting.ColorShift_Top = Color3.fromRGB(255, 50, 50)
+                end)
+                
+                local floor = mapFolder:FindFirstChild("Floor")
+                if floor then
+                    originalColors["Floor"] = floor.Color
+                    task.spawn(function()
+                        local rainbowColors = {
+                        Color3.fromRGB(255, 0, 0),
+                        Color3.fromRGB(255, 165, 0),
+                        Color3.fromRGB(255, 255, 0),
+                        Color3.fromRGB(0, 255, 0),
+                        Color3.fromRGB(0, 0, 255),
+                        Color3.fromRGB(75, 0, 130),
+                        Color3.fromRGB(238, 130, 238)
+                        }
+                        
+                        local colorIndex = 1
+                        while brazilianDiscoActive do
+                            floor.Color = rainbowColors[colorIndex]
+                            colorIndex = colorIndex + 1
+                            if colorIndex > #rainbowColors then colorIndex = 1 end
+                            task.wait(0.5)
+                        end
+                    end)
+                end
+                
+                for _, targetPlayer in pairs(Players:GetPlayers()) do
+                    if playerData[targetPlayer] and playerData[targetPlayer].Base then
+                        local base = playerData[targetPlayer].Base
+                        local basePlatform = base:FindFirstChild("BasePlatform")
+                        if basePlatform then
+                            originalColors[targetPlayer.Name .. "_Base"] = basePlatform.Color
+                            
+                            task.spawn(function()
+                                local discoColors = {
+                                Color3.fromRGB(255, 0, 255),
+                                Color3.fromRGB(0, 255, 255),
+                                Color3.fromRGB(255, 255, 0),
+                                Color3.fromRGB(255, 0, 0),
+                                Color3.fromRGB(0, 255, 0),
+                                Color3.fromRGB(0, 0, 255),
+                                }
+                                
+                                local colorIndex = 1
+                                while brazilianDiscoActive do
+                                    basePlatform.Color = discoColors[colorIndex]
+                                    basePlatform.Material = Enum.Material.Neon
+                                    colorIndex = colorIndex + 1
+                                    if colorIndex > #discoColors then colorIndex = 1 end
+                                    task.wait(0.3)
+                                end
+                            end)
+                        end
+                    end
+                end
+                
+                task.spawn(function()
+                    local walls = {"WallBack", "WallFront", "WallRight", "WallLeft"}
+                    
+                    for _, wallName in pairs(walls) do
+                        local wall = mapFolder:FindFirstChild(wallName)
+                        if wall then
+                            for i = 1, 2 do
+                                local light = Instance.new("Part")
+                                light.Size = Vector3.new(8, 8, 2)
+                                light.Color = Color3.fromRGB(255, 255, 255)
+                                light.Material = Enum.Material.Neon
+                                light.Shape = Enum.PartType.Ball
+                                light.Anchored = true
+                                light.CanCollide = false
+                                light.Name = "DiscoLight"
+                                light.Parent = wall
+                                
+                                local xOffset = (i == 1) and -60 or 60
+                                local yPos = 35
+                                
+                                if wallName == "WallBack" then
+                                    light.Position = Vector3.new(xOffset, yPos, -125)
+                                elseif wallName == "WallFront" then
+                                    light.Position = Vector3.new(xOffset, yPos, 125)
+                                elseif wallName == "WallRight" then
+                                    light.Position = Vector3.new(125, yPos, xOffset)
+                                elseif wallName == "WallLeft" then
+                                    light.Position = Vector3.new(-125, yPos, xOffset)
+                                end
+                                
+                                table.insert(discoLights, light)
+                                
+                                local spotLight = Instance.new("SpotLight")
+                                spotLight.Face = Enum.NormalId.Front
+                                spotLight.Angle = 60
+                                spotLight.Range = 100
+                                spotLight.Brightness = 5
+                                spotLight.Parent = light
+                                
+                                task.spawn(function()
+                                    local startTime = tick()
+                                    local lightColors = {
+                                    Color3.fromRGB(255, 0, 0),
+                                    Color3.fromRGB(0, 255, 0),
+                                    Color3.fromRGB(0, 0, 255),
+                                    Color3.fromRGB(255, 255, 0),
+                                    Color3.fromRGB(255, 0, 255),
+                                    Color3.fromRGB(0, 255, 255),
+                                    Color3.fromRGB(255, 128, 0),
+                                    Color3.fromRGB(128, 0, 255)
+                                    }
+                                    
+                                    while brazilianDiscoActive and light.Parent do
+                                        local elapsed = tick() - startTime
+                                        local rotationAngle = math.rad(elapsed * 90 * i)
+                                        local colorIndex = (math.floor(elapsed * 3) % #lightColors) + 1
+                                        
+                                        light.Color = lightColors[colorIndex]
+                                        spotLight.Color = lightColors[colorIndex]
+                                        
+                                        light.CFrame = CFrame.new(light.Position) * CFrame.Angles(0, rotationAngle, 0)
+                                        
+                                        task.wait(0.05)
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                end)
+                
+                for _, targetPlayer in pairs(Players:GetPlayers()) do
+                    if targetPlayer.Character and targetPlayer.Character:FindFirstChild("Humanoid") then
+                        local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
+                        humanoid.WalkSpeed = 50
+                        humanoid.JumpPower = 100
+                    end
+                end
+                
+                print("🇧🇷 DISCOTECA BRASILEÑA ACTIVADA - TODOS LOS EFECTOS APLICADOS")
+                
+                task.delay(120, function()
+                    print("🇧🇷 Transición a la discoteca de la playa...")
+                    
+                    if brazilMusic then brazilMusic:Destroy() end
+                    brazilMusic = Instance.new("Sound", Workspace)
+                    brazilMusic.Name = "BrazilianDiscoMusic"
+                    brazilMusic.SoundId = SOUND_IDS.BrazilAfter
+                    brazilMusic.Looped = true
+                    brazilMusic.Volume = 1
+                    pcall(function() brazilMusic:Play() end)
+                        
+                        local floor = mapFolder:FindFirstChild("Floor")
+                        if floor then
+                            floor.Color = Color3.fromRGB(240, 210, 140)
+                        end
+                        
+                        task.spawn(function()
+                            while crabSpawnLoopActive do
+                                local crabModel = ReplicatedStorage:LoadAsset(CRAB_MODEL_ID)
+                                local crab = crabModel:FindFirstChildOfClass("Model")
+                                if crab then
+                                    local xPos = math.random(-120, 120)
+                                    local zPos = math.random(-120, 120)
+                                    local yPos = 1
+                                    crab:SetPrimaryPartCFrame(CFrame.new(xPos, yPos, zPos))
+                                    crab.Parent = Workspace
+                                    
+                                    local hum = crab:FindFirstChildOfClass("Humanoid")
+                                    if hum then
+                                        hum.WalkSpeed = 5
+                                        hum.JumpPower = 0
+                                        local target = Vector3.new(math.random(-120, 120), 1, math.random(-120, 120))
+                                        hum:MoveTo(target)
+                                        
+                                        Debris:AddItem(crab, 40)
+                                    end
+                                end
+                                task.wait(math.random(1, 3))
+                            end
+                        end)
+                    end)
+                    
+                    task.delay(120 + 60, function()
+                        brazilianDiscoActive = false
+                        crabSpawnLoopActive = false
+                        
+                        if brazilMusic then brazilMusic:Destroy() end
+                        if backgroundMusic then backgroundMusic:Play() end
+                        
+                        local lighting = game:GetService("Lighting")
+                        lighting.Ambient = Color3.fromRGB(138, 138, 138)
+                        lighting.Brightness = 1
+                        lighting.ColorShift_Top = Color3.fromRGB(0, 0, 0)
+                        for _, sky in pairs(lighting:GetChildren()) do
+                            if sky:IsA("Sky") then sky:Destroy() end
+                        end
+                        
+                        local floor = mapFolder:FindFirstChild("Floor")
+                        if floor and originalColors["Floor"] then
+                            floor.Color = originalColors["Floor"]
+                        end
+                        
+                        for _, targetPlayer in pairs(Players:GetPlayers()) do
+                            if playerData[targetPlayer] and playerData[targetPlayer].Base then
+                                local basePlatform = playerData[targetPlayer].Base:FindFirstChild("BasePlatform")
+                                if basePlatform and originalColors[targetPlayer.Name .. "_Base"] then
+                                    basePlatform.Color = originalColors[targetPlayer.Name .. "_Base"]
+                                    basePlatform.Material = Enum.Material.Plastic
+                                end
+                            end
+                            
+                            if targetPlayer.Character and targetPlayer.Character:FindFirstChild("Humanoid") then
+                                local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
+                                humanoid.WalkSpeed = 16
+                                humanoid.JumpPower = 50
+                                
+                                if sambaAnim then sambaAnim:Stop() end
+                            end
+                            
+                            local gui = targetPlayer.PlayerGui:FindFirstChild("BrazilianDiscoGUI")
+                            if gui then gui:Destroy() end
+                        end
+                        
+                        for _, light in pairs(discoLights) do
+                            if light then light:Destroy() end
+                        end
+                        discoLights = {}
+                        
+                        for _, crab in pairs(Workspace:GetChildren()) do
+                            if crab.Name:find("Crab") then
+                                crab:Destroy()
+                            end
+                        end
+                        
+                        print("🇧🇷 Discoteca brasileña terminada - Todo restaurado")
+                    end)
+                end
+                
+                ADMIN_COMMANDS["/fuegos"] = function(adminPlayer)
+                    print("🎆 FUEGOS ARTIFICIALES ACTIVADOS POR ADMIN " .. adminPlayer.Name)
+                    
+                    local currentMusic = Workspace:FindFirstChild("FireworkMusic")
+                    if currentMusic then currentMusic:Destroy() end
+                    
+                    local music = Instance.new("Sound", Workspace)
+                    music.Name = "FireworkMusic"
+                    music.SoundId = "rbxassetid://124951509"
+                    music.Looped = true
+                    music.Volume = 0.5
+                    pcall(function() music:Play() end)
+                        
+                        local FIREWORK_DURATION = 60
+                        local startTime = tick()
+                        
+                        task.spawn(function()
+                            while tick() - startTime < FIREWORK_DURATION do
+                                local startPos = Vector3.new(math.random(-120, 120), 10, math.random(-120, 120))
+                                local rocketColor = Color3.fromHSV(math.random(), 1, 1)
+                                
+                                local rocket = Instance.new("Part")
+                                rocket.Size = Vector3.new(1, 3, 1)
+                                rocket.Color = rocketColor
+                                rocket.Material = Enum.Material.Neon
+                                rocket.Shape = Enum.PartType.Cylinder
+                                rocket.Anchored = false
+                                rocket.CanCollide = false
+                                rocket.Parent = Workspace
+                                rocket.Position = startPos
+                                
+                                local launchSound = Instance.new("Sound", rocket)
+                                launchSound.SoundId = SOUND_IDS.FireworkLaunch
+                                launchSound.Volume = 0.7
+                                launchSound.RollOffMaxDistance = 200
+                                launchSound:Play()
+                                Debris:AddItem(launchSound, 5)
+                                
+                                local bodyVelocity = Instance.new("BodyVelocity")
+                                bodyVelocity.MaxForce = Vector3.new(0, math.huge, 0)
+                                bodyVelocity.Velocity = Vector3.new(0, math.random(80, 120), 0)
+                                bodyVelocity.Parent = rocket
+                                
+                                local trail = Instance.new("Fire", rocket)
+                                trail.Size = 5
+                                trail.Heat = 10
+                                trail.Color = rocketColor
+                                trail.SecondaryColor = Color3.fromRGB(255, 255, 0)
+                                
+                                task.delay(math.random(2.5, 3.5), function()
+                                    if rocket and rocket.Parent then
+                                        local explosionPos = rocket.Position
+                                        rocket:Destroy()
+                                        
+                                        local colors = {
+                                        Color3.fromRGB(255, 0, 0), Color3.fromRGB(255, 165, 0), Color3.fromRGB(255, 255, 0),
+                                        Color3.fromRGB(0, 255, 0), Color3.fromRGB(0, 0, 255), Color3.fromRGB(255, 0, 255)
+                                        }
+                                        
+                                        for particle = 1, 75 do
+                                            local firework = Instance.new("Part")
+                                            firework.Size = Vector3.new(1, 1, 1)
+                                            firework.Color = colors[math.random(1, #colors)]
+                                            firework.Material = Enum.Material.Neon
+                                            firework.Shape = Enum.PartType.Ball
+                                            firework.Anchored = false
+                                            firework.CanCollide = false
+                                            firework.Parent = Workspace
+                                            firework.Position = explosionPos
+                                            
+                                            local direction = Vector3.new(math.random(-10, 10), math.random(-5, 5), math.random(-10, 10)).Unit
+                                            local velocity = Instance.new("BodyVelocity", firework)
+                                            velocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                                            velocity.Velocity = direction * math.random(20, 40)
+                                            
+                                            local pointLight = Instance.new("PointLight", firework)
+                                            pointLight.Color = firework.Color
+                                            pointLight.Brightness = 2
+                                            pointLight.Range = 15
+                                            
+                                            Debris:AddItem(firework, 5)
+                                        end
+                                        
+                                        local skyExplosion = Instance.new("Sound", Workspace)
+                                        skyExplosion.SoundId = "rbxassetid://10066947742"
+                                        skyExplosion.Volume = 0.8
+                                        pcall(function() skyExplosion:Play() end)
+                                            Debris:AddItem(skyExplosion, 2)
+                                        end
+                                    end)
+                                    task.wait(0.25)
+                                end
+                                
+                                task.delay(5, function()
+                                    if music then music:Destroy() end
+                                    print("🎆 Fuegos artificiales terminados.")
+                                end)
+                            end)
+                        end
+                        
+                        ADMIN_COMMANDS["/muerte"] = function(adminPlayer)
+                            print("💀 EVENTO DE LA MUERTE ACTIVADO POR ADMIN " .. adminPlayer.Name)
+                            
+                            if deathEventActive then
+                                print("❌ El Evento de la Muerte ya está activo.")
+                                return
+                            end
+                            
+                            deathEventActive = true
+                            
+                            local backgroundMusic = Workspace:FindFirstChild("BackgroundMusic")
+                            if backgroundMusic then backgroundMusic:Stop() end
+                            
+                            local eventMusic = Instance.new("Sound", Workspace)
+                            eventMusic.Name = "DeathEventMusic"
+                            eventMusic.SoundId = SOUND_IDS.DeathEventMusic
+                            eventMusic.Looped = true
+                            eventMusic.Volume = 0.8
+                            pcall(function() eventMusic:Play() end)
+                                
+                                local colorCorrection = Instance.new("ColorCorrectionEffect", Lighting)
+                                colorCorrection.Name = "DeathEventEffect"
+                                colorCorrection.Saturation = -1
+                                colorCorrection.Contrast = 0.15
+                                
+                                local hiddenBases = {}
+                                for _, baseModel in ipairs(basesFolder:GetChildren()) do
+                                    if baseModel:IsA("Model") then
+                                        table.insert(hiddenBases, baseModel)
+                                        baseModel.Parent = nil
+                                    end
+                                end
+                                
+                                local ancientForest = Instance.new("Folder", Workspace)
+                                ancientForest.Name = "AncientForest"
+                                
+                                local mapFloor = mapFolder:FindFirstChild("Floor")
+                                if mapFloor then
+                                    for i = 1, 150 do
+                                        local tree = Instance.new("Model", ancientForest)
+                                        tree.Name = "AncientTree"
+                                        
+                                        local trunk = Instance.new("Part", tree)
+                                        trunk.Size = Vector3.new(4, math.random(15, 30), 4)
+                                        trunk.Color = Color3.fromRGB(87, 59, 15)
+                                        trunk.Material = Enum.Material.Wood
+                                        trunk.Anchored = true
+                                        
+                                        local leaves = Instance.new("Part", tree)
+                                        leaves.Size = Vector3.new(12, 12, 12)
+                                        leaves.Color = Color3.fromRGB(25, 60, 20)
+                                        leaves.Material = Enum.Material.Grass
+                                        leaves.Shape = Enum.PartType.Ball
+                                        leaves.Anchored = true
+                                        
+                                        local randomX = math.random(-120, 120)
+                                        local randomZ = math.random(-120, 120)
+                                        local trunkPos = Vector3.new(randomX, trunk.Size.Y / 2, randomZ)
+                                        
+                                        tree:SetPrimaryPartCFrame(CFrame.new(trunkPos))
+                                        trunk.Position = trunkPos
+                                        leaves.Position = trunkPos + Vector3.new(0, trunk.Size.Y / 2, 0)
+                                    end
+                                end
+                                
+                                task.delay(25, function()
+                                    print("💀 El Evento de la Muerte ha terminado. Restaurando el mundo...")
+                                    
+                                    if eventMusic then eventMusic:Destroy() end
+                                    if backgroundMusic then backgroundMusic:Play() end
+                                    if colorCorrection then colorCorrection:Destroy() end
+                                    
+                                    for _, baseModel in ipairs(hiddenBases) do
+                                        baseModel.Parent = basesFolder
+                                    end
+                                    if ancientForest then ancientForest:Destroy() end
+                                    
+                                    deathEventActive = false
+                                end)
+                            end
+                            
+                            -- ######################################################################
+                            -- #############      FIN DEL NUEVO SISTEMA DE COMANDOS      ############
+                            -- ######################################################################
+                            
+                            local function setupPlayer(player)
+                                baseCount = baseCount + 1
+                                if baseCount <= #BASE_POSITIONS then
+                                    local posData = BASE_POSITIONS[baseCount]
+                                    createBase(player, posData.Position, posData.Orientation)
+                                end
+                                
+                                player.CharacterAdded:Connect(function(char)
+                                    local gui = player.PlayerGui:FindFirstChild("MoneyGui")
+                                    if not gui then
+                                        gui = Instance.new("ScreenGui")
+                                        gui.Name = "MoneyGui"
+                                        gui.Parent = player.PlayerGui
+                                        
+                                        local moneyLabel = Instance.new("TextLabel")
+                                        moneyLabel.Size = UDim2.new(0.2, 0, 0.1, 0)
+                                        moneyLabel.Position = UDim2.new(0, 10, 0.9, 0)
+                                        moneyLabel.Text = "Dinero: $0"
+                                        moneyLabel.TextScaled = true
+                                        moneyLabel.BackgroundTransparency = 1
+                                        moneyLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+                                        moneyLabel.Name = "moneyLabel"
+                                        moneyLabel.Parent = gui
+                                    end
+                                    
+                                    local head = char:WaitForChild("Head")
+                                    local headGui = Instance.new("BillboardGui", head)
+                                    headGui.Size = UDim2.new(0, 100, 0, 50)
+                                    headGui.Adornee = head
+                                    local headLabel = Instance.new("TextLabel", headGui)
+                                    headLabel.Size = UDim2.new(1, 0, 1, 0)
+                                    headLabel.Text = player.Name
+                                    headLabel.TextScaled = true
+                                    headLabel.BackgroundTransparency = 1
+                                    headLabel.TextColor3 = Color3.new(1, 1, 1)
+                                    
+                                    local isFirstJoin = not player:GetAttribute("HasJoinedBefore")
+                                    if isFirstJoin and playerData[player] then
+                                        player:SetAttribute("HasJoinedBefore", true)
+                                        local basePlatform = playerData[player].Base and playerData[player].Base:FindFirstChild("BasePlat  form")
+                                        if basePlatform then
+                                            local basePosition = basePlatform.Position
+                                            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+                                            if hrp then
+                                                local guideArrow = Instance.new("Part")
+                                                guideArrow.Size = Vector3.new(0.5, 0.5, 0.5)
+                                                guideArrow.Shape = Enum.PartType.Ball
+                                                guideArrow.Color = Color3.fromRGB(255, 255, 0)
+                                                guideArrow.Anchored = true
+                                                guideArrow.CanCollide = false
+                                                guideArrow.Parent = char
+                                                guideArrow.Name = "GuidingArrow"
+                                                
+                                                local arrowGui = Instance.new("BillboardGui")
+                                                arrowGui.Size = UDim2.new(0, 100, 0, 100)
+                                                arrowGui.StudsOffset = 
+                                                Vector3.new(0, 5, 0)
+                                                arrowGui.Adornee = guideArrow
+                                                arrowGui.Parent = guideArrow
+                                                
+                                                local arrowImage = Instance.new("ImageLabel")
+                                                arrowImage.Size = UDim2.new(1, 0, 1, 0)
+                                                arrowImage.BackgroundTransparency = 1
+                                                arrowImage.Image = "rbxassetid://10619717173"
+                                                arrowImage.Parent = arrowGui
+                                                
+                                                local arrowConnection
+                                                arrowConnection = RunService.Heartbeat:Connect(function()
+                                                    if not guideArrow.Parent or not hrp.Parent then
+                                                        if arrowConnection then arrowConnection:Disconnect() end
+                                                        if guideArrow and guideArrow.Parent then guideArrow:Destroy() end
+                                                        return
+                                                    end
+                                                    local playerPos = hrp.Position
+                                                    local lookAt = basePosition
+                                                    local direction = (lookAt - playerPos).Unit
+                                                    local arrowPos = playerPos + direction * 10 + Vector3.new(0, 10, 0)
+                                                    guideArrow.CFrame = CFrame.new(arrowPos, lookAt)
+                                                end)
+                                                
+                                                Debris:AddItem(guideArrow, GUIDE_ARROW_DURATION)
+                                                task.delay(GUIDE_ARROW_DURATION, function()
+                                                    if arrowConnection then arrowConnection:Disconnect() end
+                                                end)
+                                            end
+                                        end
+                                    end
+                                end)
+                                
+                                player.Chatted:Connect(function(message)
+                                    local messageParts = string.split(message, " ")
+                                    local command = (messageParts[1] or ""):lower()
+                                    
+                                    if IsAdmin(player) then
+                                        if ADMIN_COMMANDS[command] then
+                                            local args = {}
+                                            for i = 2, #messageParts do
+                                                table.insert(args, messageParts[i])
+                                            end
+                                            -- Llama a la función del comando con los argumentos desempaquetados
+                                            ADMIN_COMMANDS[command](player, unpack(args))
+                                        end
+                                    end
+                                end)
+                                
+                                -- ############# NUEVO: Creador del Menú de Admin #############
+                                if IsAdmin(player) then
+                                    -- Crear el GUI principal
+                                    local adminGui = Instance.new("ScreenGui")
+                                    adminGui.Name = "AdminMenuGui"
+                                    adminGui.ResetOnSpawn = false
+                                    
+                                    -- Botón para abrir/cerrar el menú
+                                    local menuToggle = Instance.new("TextButton")
+                                    menuToggle.Name = "MenuToggle"
+                                    menuToggle.Size = UDim2.new(0, 150, 0, 40)
+                                    menuToggle.Position = UDim2.new(0.5, -75, 0, 10)
+                                    menuToggle.Text = "Menú Admin"
+                                    menuToggle.Font = Enum.Font.SourceSansBold
+                                    menuToggle.TextScaled = true
+                                    menuToggle.BackgroundColor3 = Color3.fromRGB(255, 120, 0)
+                                    menuToggle.BorderColor3 = Color3.fromRGB(255, 255, 255)
+                                    menuToggle.BorderSizePixel = 2
+                                    menuToggle.Parent = adminGui
+                                    
+                                    -- Panel principal del menú (scrollable)
+                                    local commandsFrame = Instance.new("ScrollingFrame")
+                                    commandsFrame.Name = "CommandsFrame"
+                                    commandsFrame.Size = UDim2.new(0, 450, 0, 300)
+                                    commandsFrame.Position = UDim2.new(0.5, -225, 0, 60)
+                                    commandsFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                                    commandsFrame.BackgroundTransparency = 0.2
+                                    commandsFrame.BorderSizePixel = 2
+                                    commandsFrame.BorderColor3 = Color3.fromRGB(255, 120, 0)
+                                    commandsFrame.Visible = false
+                                    commandsFrame.CanvasSize = UDim2.new(0, 0, 0, 0) -- Se ajustará automáticamente
+                                    commandsFrame.Parent = adminGui
+                                    
+                                    local uiList = Instance.new("UIListLayout", commandsFrame)
+                                    uiList.Padding = UDim.new(0, 5)
+                                    uiList.SortOrder = Enum.SortOrder.LayoutOrder
+                                    
+                                    local uiPadding = Instance.new("UIPadding", commandsFrame)
+                                    uiPadding.PaddingTop = UDim.new(0, 5)
+                                    uiPadding.PaddingLeft = UDim.new(0, 5)
+                                    
+                                    -- Función para crear una entrada de comando en el menú
+                                    local function createCommandEntry(commandName, argsPlaceholders, layoutOrder)
+                                        local entryFrame = Instance.new("Frame")
+                                        entryFrame.Name = commandName
+                                        entryFrame.Size = UDim2.new(1, -10, 0, 40)
+                                        entryFrame.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+                                        entryFrame.LayoutOrder = layoutOrder
+                                        entryFrame.Parent = commandsFrame
+                                        
+                                        local commandLabel = Instance.new("TextLabel", entryFrame)
+                                        commandLabel.Size = UDim2.new(0.3, 0, 1, 0)
+                                        commandLabel.Text = commandName
+                                        commandLabel.Font = Enum.Font.SourceSans
+                                        commandLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                                        commandLabel.BackgroundTransparency = 1
+                                        commandLabel.TextXAlignment = Enum.TextXAlignment.Left
+                                        
+                                        local argLayout = Instance.new("UIListLayout", entryFrame)
+                                        argLayout.FillDirection = Enum.FillDirection.Horizontal
+                                        argLayout.Padding = UDim.new(0, 5)
+                                        
+                                        local argWidth = (0.7 - 0.2) / math.max(1, #argsPlaceholders)
+                                        
+                                        for i, placeholder in ipairs(argsPlaceholders) do
+                                            local argBox = Instance.new("TextBox")
+                                            argBox.Name = "Arg" .. i
+                                            argBox.Size = UDim2.new(argWidth, -5, 1, -10)
+                                            argBox.PlaceholderText = placeholder
+                                            argBox.Font = Enum.Font.SourceSans
+                                            argBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+                                            argBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+                                            argBox.ClearTextOnFocus = false
+                                            argBox.Parent = entryFrame
+                                        end
+                                        
+                                        local executeBtn = Instance.new("TextButton")
+                                        executeBtn.Name = "ExecuteButton"
+                                        executeBtn.Size = UDim2.new(0.2, 0, 1, -10)
+                                        executeBtn.Text = "Ejecutar"
+                                        executeBtn.Font = Enum.Font.SourceSansBold
+                                        executeBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
+                                        executeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                                        executeBtn.Parent = entryFrame
+                                    end
+                                    
+                                    -- Crear entradas para cada comando
+                                    createCommandEntry("/givemoney", {"Jugador", "Cantidad"}, 1)
+                                    createCommandEntry("/teleport", {"Jugador"}, 2)
+                                    createCommandEntry("/spawnenemy", {"Cantidad"}, 3)
+                                    createCommandEntry("/adminabuse", {}, 4)
+                                    createCommandEntry("/cleanup", {}, 5)
+                                    createCommandEntry("/raintacos", {}, 6)
+                                    createCommandEntry("/brasil", {}, 7)
+                                    createCommandEntry("/fuegos", {}, 8)
+                                    createCommandEntry("/muerte", {}, 9)
+                                    
+                                    -- Script local para manejar la interacción del GUI
+                                    local clientScript = Instance.new("LocalScript", adminGui)
+                                    clientScript.Name = "AdminMenuClient"
+                                    clientScript.Source = [[
+                                    local gui = script.Parent
+                                    local toggleButton = gui:WaitForChild("MenuToggle")
+                                    local commandsFrame = gui:WaitForChild("CommandsFrame")
+                                    local commandEvent = game:GetService("ReplicatedStorage"):WaitForChild("ExecuteAdminCommandEvent")
+                                    
+                                    toggleButton.MouseButton1Click:Connect(function()
+                                        commandsFrame.Visible = not commandsFrame.Visible
+                                    end)
+                                    
+                                    for _, commandEntry in ipairs(commandsFrame:GetChildren()) do
+                                        if commandEntry:IsA("Frame") then
+                                            local executeButton = commandEntry:FindFirstChild("ExecuteButton")
+                                            if executeButton then
+                                                executeButton.MouseButton1Click:Connect(function()
+                                                    local commandName = commandEntry.Name
+                                                    local args = {}
+                                                    
+                                                    local children = commandEntry:GetChildren()
+                                                    table.sort(children, function(a, b) return a.Name < b.Name end)
+                                                        
+                                                        for _, child in ipairs(children) do
+                                                            if child:IsA("TextBox") then
+                                                                table.insert(args, child.Text)
+                                                            end
+                                                        end
+                                                        
+                                                        commandEvent:FireServer(commandName, args)
+                                                        print("Ejecutando " .. commandName .. " con argumentos: ", table.concat(args, ", "))
+                                                    end)
+                                                end
+                                            end
+                                        end
+                                        ]]
+                                        
+                                        -- Añadir el GUI al jugador
+                                        adminGui.Parent = player.PlayerGui
+                                    end
+                                end
+                                
+                                -- Listener en el servidor para el evento de ejecución de comandos
+                                ExecuteAdminCommandEvent.OnServerEvent:Connect(function(player, command, args)
+                                    if not IsAdmin(player) then return end -- Doble chequeo de seguridad
+                                        
+                                        local commandFunc = ADMIN_COMMANDS[command]
+                                        if commandFunc then
+                                            -- Ejecuta el comando con los argumentos recibidos
+                                            commandFunc(player, unpack(args))
+                                        else
+                                            warn("El jugador " .. player.Name .. " intentó ejecutar un comando desconocido: " .. command)
+                                        end
+                                    end)
+                                    
+                                    -- SISTEMA DE INGRESOS PASIVOS DE FRUTAS
+                                    task.spawn(function()
+                                        while true do
+                                            task.wait(1)
+                                            
+                                            for _, player in pairs(Players:GetPlayers()) do
+                                                if playerData[player] and playerData[player].Base then
+                                                    local totalIncome = 0
+                                                    
+                                                    for i = 1, 6 do
+                                                        local quadName = "FruitQuad" .. i
+                                                        local quad = playerData[player].Base:FindFirstChild(quadName)
+                                                        if quad then
+                                                            for _, child in pairs(quad:GetChildren()) do
+                                                                if child:IsA("Model") and child:GetAttribute("IncomeRate") then
+                                                                    local income = child:GetAttribute("IncomeRate")
+                                                                    totalIncome = totalIncome + income
+                                                                end
+                                                            end
+                                                        end
+                                                    end
+                                                    
+                                                    if totalIncome > 0 then
+                                                        playerData[player].Money = playerData[player].Money + totalIncome
+                                                        updateMoneyLabel(player)
+                                                        
+                                                        local gui = player.PlayerGui:FindFirstChild("IncomeNotification")
+                                                        if gui then gui:Destroy() end
+                                                        
+                                                        gui = Instance.new("ScreenGui", player.PlayerGui)
+                                                        gui.Name = "IncomeNotification"
+                                                        
+                                                        local notification = Instance.new("TextLabel", gui)
+                                                        notification.Size = UDim2.new(0.2, 0, 0.05, 0)
+                                                        notification.Position = UDim2.new(0.4, 0, 0.3, 0)
+                                                        notification.Text = "+$" .. totalIncome
+                                                        notification.TextScaled = true
+                                                        notification.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+                                                        notification.TextColor3 = Color3.fromRGB(255, 255, 255)
+                                                        
+                                                        local tweenInfo = TweenInfo.new(2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+                                                        local tween = TweenService:Create(notification, tweenInfo, {
+                                                        Position = UDim2.new(0.4, 0, 0.2, 0),
+                                                        TextTransparency = 1
+                                                        })
+                                                        tween:Play()
+                                                        
+                                                        Debris:AddItem(gui, 2)
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end)
+                                    
+                                    -- INICIALIZAR SISTEMAS
+                                    createMap()
+                                    
+                                    for _, player in ipairs(Players:GetPlayers()) do
+                                        setupPlayer(player)
+                                    end
+                                    
+                                    Players.PlayerAdded:Connect(setupPlayer)
+                                    
+                                    Players.PlayerRemoving:Connect(function(player)
+                                        if playerData[player] then
+                                            if playerData[player].Base and playerData[player].Base.Parent then
+                                                playerData[player].Base:Destroy()
+                                            end
+                                            playerData[player] = nil
+                                        end
+                                    end)
+                                    
+                                    startFruitSpawn()
+                                    
